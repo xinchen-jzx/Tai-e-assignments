@@ -62,6 +62,6 @@ public interface NodeResult<Node, Fact> extends StmtResult<Fact> {
      */
     @Override
     default Fact getResult(Stmt stmt) {
-        return getOutFact((Node) stmt);
+        return getOutFact((Node)stmt);
     }
 }
