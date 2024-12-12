@@ -35,18 +35,27 @@ import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
 import pascal.taie.ir.exp.ArithmeticExp;
 import pascal.taie.ir.exp.ArrayAccess;
+import pascal.taie.ir.exp.BinaryExp;
 import pascal.taie.ir.exp.CastExp;
+import pascal.taie.ir.exp.ConditionExp;
 import pascal.taie.ir.exp.FieldAccess;
+import pascal.taie.ir.exp.LValue;
 import pascal.taie.ir.exp.NewExp;
 import pascal.taie.ir.exp.RValue;
 import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.AssignStmt;
+import pascal.taie.ir.stmt.DefinitionStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
+import polyglot.ast.Switch;
+import soot.JastAddJ.IfStmt;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedList;
 import java.util.Set;
+import java.util.Queue;
 import java.util.TreeSet;
 
 public class DeadCodeDetection extends MethodAnalysis {
@@ -61,16 +70,87 @@ public class DeadCodeDetection extends MethodAnalysis {
     public Set<Stmt> analyze(IR ir) {
         // obtain CFG
         CFG<Stmt> cfg = ir.getResult(CFGBuilder.ID);
+        
         // obtain result of constant propagation
-        DataflowResult<Stmt, CPFact> constants =
-                ir.getResult(ConstantPropagation.ID);
+        DataflowResult<Stmt, CPFact> constants = ir.getResult(ConstantPropagation.ID);
+        
         // obtain result of live variable analysis
-        DataflowResult<Stmt, SetFact<Var>> liveVars =
-                ir.getResult(LiveVariableAnalysis.ID);
+        DataflowResult<Stmt, SetFact<Var>> liveVars = ir.getResult(LiveVariableAnalysis.ID);
+        
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
-        // TODO - finish me
-        // Your task is to recognize dead code in ir and add it to deadCode
+
+        // Solution
+        Set<Stmt> liveCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
+        Queue<Stmt> stmtQueue = new LinkedList<>();
+        stmtQueue.add(cfg.getEntry());
+
+        while (!stmtQueue.isEmpty()) {
+            Stmt cur = stmtQueue.poll();
+            if (liveCode.contains(cur)) continue;
+
+            if (!cfg.isExit(cur)) {
+                if (cur instanceof If ifStmt) {
+                    liveCode.add(cur);
+
+                    Value var = ConstantPropagation.evaluate(ifStmt.getCondition(), constants.getInFact(cur));
+                    if (var.isConstant()) {
+                        boolean cond = var.getConstant() != 0;
+                        for(var edge : cfg.getOutEdgesOf(cur)) {
+                            if((edge.getKind() == Edge.Kind.IF_TRUE && cond) || (edge.getKind() == Edge.Kind.IF_FALSE && !cond)){
+                                stmtQueue.add(edge.getTarget());
+                                break;
+                            }
+                        }
+                    } else {
+                        stmtQueue.addAll(cfg.getSuccsOf(cur));
+                    }
+                } else if (cur instanceof SwitchStmt switchStmt) {
+                    liveCode.add(cur);
+                    
+                    Value var = ConstantPropagation.evaluate(switchStmt.getVar(), constants.getInFact(cur));
+                    if (var.isConstant()) {
+                        boolean occur = false;
+                        for (var edge : cfg.getOutEdgesOf(cur)) {
+                            if (edge.getKind() == Edge.Kind.SWITCH_CASE) {
+                                if (edge.getCaseValue() == var.getConstant()) {
+                                    occur = true;
+                                    stmtQueue.add(edge.getTarget());
+                                }
+                            }
+                        }
+                        if (!occur) {
+                            stmtQueue.add(switchStmt.getDefaultTarget());
+                        }
+                    } else {
+                        stmtQueue.addAll(cfg.getSuccsOf(cur));
+                    }
+                } else if (cur instanceof DefinitionStmt<?, ?> definitionStmt) {
+                    if (definitionStmt instanceof AssignStmt<?, ?> assignStmt) {
+                        if (hasNoSideEffect(assignStmt.getRValue()) && assignStmt.getLValue() instanceof Var lVar && !liveVars.getOutFact(assignStmt).contains(lVar));
+                        else liveCode.add(cur);
+                    } else {
+                        liveCode.add(cur);
+                    }
+                    stmtQueue.addAll(cfg.getSuccsOf(cur));
+                } else {
+                    liveCode.add(cur);
+                    stmtQueue.addAll(cfg.getSuccsOf(cur));
+                }
+            } else {
+                liveCode.add(cur);
+            }
+        }
+
+        for (Stmt stmt : ir.getStmts()) {
+            if (!liveCode.contains(stmt)) {
+                deadCode.add(stmt);
+            }
+        }
+
+        deadCode.remove(cfg.getEntry());
+        deadCode.remove(cfg.getExit());
+
         return deadCode;
     }
 

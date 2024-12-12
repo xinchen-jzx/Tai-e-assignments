@@ -22,6 +22,8 @@
 
 package pascal.taie.analysis.dataflow.solver;
 
+import java.util.ArrayList;
+
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
@@ -34,11 +36,50 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
     @Override
     protected void doSolveForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
-    }
+        ArrayList<Node> workList = new ArrayList<>();
+        for (Node node : cfg) {
+            if (cfg.isEntry(node)) continue;
+            workList.add(node);
+        }
 
+        while (!workList.isEmpty()) {
+            Node node = workList.remove(0);
+
+            // Update inFacts
+            for (Node p : cfg.getPredsOf(node)) {
+                analysis.meetInto(result.getOutFact(p), result.getInFact(node));
+            }
+
+            // Update outFacts
+            boolean changed = analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
+
+            if (changed) {
+                for (Node succ : cfg.getSuccsOf(node)) workList.add(succ);
+            }
+        }
+    }
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        ArrayList<Node> workList = new ArrayList<Node>();
+        for (Node node : cfg) {
+            if (cfg.isExit(node)) continue;
+            workList.add(node);
+        }
+
+        while (!workList.isEmpty()) {
+            Node node = workList.remove(0);
+
+            // Update outFacts
+            for (Node succ : cfg.getSuccsOf(node)) {
+                analysis.meetInto(result.getInFact(succ), result.getOutFact(node));
+            }
+
+            // Update inFacts
+            boolean changed = analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
+
+            if (changed) {
+                for (Node pred : cfg.getPredsOf(node)) workList.add(pred);
+            }
+        }
     }
 }

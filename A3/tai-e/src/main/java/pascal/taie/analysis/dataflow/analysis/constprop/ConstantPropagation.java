@@ -32,6 +32,7 @@ import pascal.taie.ir.exp.BitwiseExp;
 import pascal.taie.ir.exp.ConditionExp;
 import pascal.taie.ir.exp.Exp;
 import pascal.taie.ir.exp.IntLiteral;
+import pascal.taie.ir.exp.RValue;
 import pascal.taie.ir.exp.ShiftExp;
 import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.DefinitionStmt;
@@ -56,32 +57,59 @@ public class ConstantPropagation extends
 
     @Override
     public CPFact newBoundaryFact(CFG<Stmt> cfg) {
-        // TODO - finish me
-        return null;
+        return new CPFact();
     }
-
     @Override
     public CPFact newInitialFact() {
-        // TODO - finish me
-        return null;
+        return new CPFact();
     }
-
     @Override
     public void meetInto(CPFact fact, CPFact target) {
-        // TODO - finish me
+        for (Var key : fact.keySet()) {
+            target.update(key, meetValue(fact.get(key), target.get(key)));
+        }
     }
-
     /**
      * Meets two Values.
      */
     public Value meetValue(Value v1, Value v2) {
-        // TODO - finish me
-        return null;
-    }
+        // 1. NAC
+        if (v1.isNAC() || v2.isNAC()) return Value.getNAC();
 
+        // 2. Undef
+        if (v1.isUndef()) return v2;
+        else if (v2.isUndef()) return v1;
+
+        // 3. Constant
+        if (v1.getConstant() == v2.getConstant()) return Value.makeConstant(v1.getConstant());
+        else return Value.getNAC();
+    }
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
-        // TODO - finish me
+        if (stmt.getDef().isPresent()) {
+            if ((stmt.getDef().get() instanceof Var) && canHoldInt((Var)stmt.getDef().get())) {
+                Var kill = (Var)stmt.getDef().get();
+                
+                // IN[B] - kill_B
+                CPFact outTmp = in.copy();
+                outTmp.update(kill, evaluate(((DefinitionStmt<Var, RValue>)stmt).getRValue(), in));
+
+                if (!outTmp.equals(out)) {
+                    for (Var key : outTmp.keySet()) {
+                        out.update(key, outTmp.get(key));
+                    }
+                }
+
+                return outTmp != out;
+            }
+        }
+
+        if (!in.equals(out)) {
+            for (Var key : in.keySet()) {
+                out.update(key, in.get(key));
+            }
+            return true;
+        }
         return false;
     }
 
@@ -111,7 +139,88 @@ public class ConstantPropagation extends
      * @return the resulting {@link Value}
      */
     public static Value evaluate(Exp exp, CPFact in) {
-        // TODO - finish me
-        return null;
+        // 计算给定的表达式
+        if (exp instanceof Var) return in.get((Var)exp);
+        else if (exp instanceof IntLiteral) return Value.makeConstant(((IntLiteral)exp).getValue());
+        else if (exp instanceof BinaryExp) {
+            Value v1 = in.get(((BinaryExp)exp).getOperand1());
+            Value v2 = in.get(((BinaryExp)exp).getOperand2());
+            
+            // 情况1: Consider div/mod by zero
+            if (v1.isNAC() || v2.isNAC()) {
+                if (exp instanceof ArithmeticExp) {
+                    if (((ArithmeticExp)exp).getOperator() == ArithmeticExp.Op.DIV && v2.isConstant() && v2.getConstant() == 0) {
+                        return Value.getUndef();
+                    } else if (((ArithmeticExp)exp).getOperator() == ArithmeticExp.Op.REM && v2.isConstant() && v2.getConstant() == 0) {
+                        return Value.getUndef();
+                    }
+                }
+                return Value.getNAC();
+            }
+
+            if (v1.isUndef() || v2.isUndef()) return Value.getUndef();
+
+            // 情况2: Consider div/mod by zero
+            if (v1.isConstant() && v2.isConstant()) {
+                if (exp instanceof ArithmeticExp) {
+                    if (((ArithmeticExp)exp).getOperator() == ArithmeticExp.Op.DIV && v2.getConstant() == 0) {
+                        return Value.getUndef();
+                    } else if (((ArithmeticExp)exp).getOperator() == ArithmeticExp.Op.REM && v2.getConstant() == 0) {
+                        return Value.getUndef();
+                    }
+
+                    switch (((ArithmeticExp)exp).getOperator()) {
+                        case ADD:
+                            return Value.makeConstant(v1.getConstant() + v2.getConstant());
+                        case SUB:
+                            return Value.makeConstant(v1.getConstant() - v2.getConstant());
+                        case MUL:
+                            return Value.makeConstant(v1.getConstant() * v2.getConstant());
+                        case DIV:
+                            return Value.makeConstant(v1.getConstant() / v2.getConstant());
+                        case REM:
+                            return Value.makeConstant(v1.getConstant() % v2.getConstant());
+                    }
+                } else if (exp instanceof ConditionExp) {
+                    switch (((ConditionExp)exp).getOperator()) {
+                        case EQ:
+                            return Value.makeConstant(v1.getConstant() == v2.getConstant() ? 1 : 0);
+                        case NE:
+                            return Value.makeConstant(v1.getConstant() != v2.getConstant() ? 1 : 0);
+                        case LT:
+                            return Value.makeConstant(v1.getConstant() < v2.getConstant() ? 1 : 0);
+                        case GT:
+                            return Value.makeConstant(v1.getConstant() > v2.getConstant() ? 1 : 0);
+                        case LE:
+                            return Value.makeConstant(v1.getConstant() <= v2.getConstant() ? 1 : 0);
+                        case GE:
+                            return Value.makeConstant(v1.getConstant() >= v2.getConstant() ? 1 : 0);
+                    }
+                } else if (exp instanceof ShiftExp) {
+                    switch (((ShiftExp)exp).getOperator()) {
+                        case SHL:
+                            return Value.makeConstant(v1.getConstant() << v2.getConstant());
+                        case SHR:
+                            return Value.makeConstant(v1.getConstant() >> v2.getConstant());
+                        case USHR:
+                            return Value.makeConstant(v1.getConstant() >>> v2.getConstant());
+                    }
+                } else if (exp instanceof BitwiseExp) {
+                    switch (((BitwiseExp)exp).getOperator()) {
+                        case OR:
+                            return Value.makeConstant(v1.getConstant() | v2.getConstant());
+                        case AND:
+                            return Value.makeConstant(v1.getConstant() & v2.getConstant());
+                        case XOR:
+                            return Value.makeConstant(v1.getConstant() ^ v2.getConstant());
+                    }
+                }
+            }
+
+            // 情况3
+            return Value.getNAC();
+        } else {
+            return Value.getNAC();
+        }
     }
 }
